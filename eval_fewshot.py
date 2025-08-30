@@ -37,7 +37,7 @@ from util.config import overwrite_eval_config
 from util.misc import convert_to_serializable, print_rank_zero; print_rank_zero()
 
 
-def init_wandb(cfg):                    
+def init_wandb(cfg):
     os.environ["WANDB_ENTITY"] = cfg.wandb_entity
     os.environ["WANDB_PROJECT"] = cfg.wandb_project
     if cfg.get("wandb_watch") is not None:
@@ -60,42 +60,42 @@ def init_wandb(cfg):
             random.seed(os.urandom(16))
             wandb_run_id = "".join(random.choices(characters, k=8))
             with open_dict(cfg):
-                cfg.wandb_run_id = wandb_run_id                
+                cfg.wandb_run_id = wandb_run_id
     os.environ["WANDB_RUN_ID"] = cfg.wandb_run_id
     wandb.init(entity=cfg.wandb_entity, project=cfg.wandb_project, name=cfg.name)
     wandb.define_metric("eval_fewshot/step")
-    
+
 
 @hydra.main(config_path="conf/eval_fewshot", config_name="yymmdd_eval_fewshot")
 def main(cfg: DictConfig):
-    
+
     cfg = overwrite_eval_config(cfg).eval_fewshot
-    
+
     # preprocess config
     cfg.output_path = os.path.join(SAVE_DIR, "eval_fewshot", cfg.name)
-        
+
     if cfg.get("tensorboard"):
         writer = SummaryWriter(os.path.join(SAVE_DIR, "tensorboard", cfg.name))
     else:
         writer = None
-        
+
     eval_logger = utils.eval_logger
     eval_logger.setLevel(getattr(logging, f"{cfg.verbosity}"))
     eval_logger.info(f"Verbosity set to {cfg.verbosity}")
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    
+
     if cfg.get("eval_multiple_checkpoints", False):
         print("eval_multiple_checkpoints only supports for checkpoints that we trained")
         evaluate_multiple_checkpoints(cfg, eval_logger, writer)
     else:
         evaluate_model(cfg, eval_logger, writer)
-       
+
 
 def evaluate_model(cfg: DictConfig, eval_logger=None, writer=None, step=None):
     if cfg.model in ["hf-auto", "hf", "huggingface"]:
         print("Preparing evaluation of vanilla Transformer")
         assert cfg.model_args, "Must specify --model_args"
-        
+
         # check dtype
         if cfg.precision == "fp32":
             dtype, torch_dtype = "float32", torch.float32
@@ -105,26 +105,26 @@ def evaluate_model(cfg: DictConfig, eval_logger=None, writer=None, step=None):
             dtype, torch_dtype = "bfloat16", torch.bfloat16
         else:
             raise ValueError
-        
+
         print("Using huggingface model")
         model = cfg.model
-        
+
         if "dtype" not in cfg.model_args:
             cfg.model_args += f",dtype={dtype}"
         else:
             pattern = r"dtype=\w+"
             cfg.model_args = re.sub(pattern, f"dtype={dtype}", cfg.model_args)
-    
+
     elif cfg.model in ["recursive_lm", "recursive_transformer"]:
         print("Preparing evaluation of Recursive Transformer")
         assert cfg.model_args, "Must specify --model_args"
-        
+
         train_cfg_path = os.path.join(PROJECT_ROOT, cfg.train_cfg_fpath, f"{cfg.model_name_or_path.split('/')[-1]}.yaml")
         if os.path.exists(train_cfg_path):
             # in case of pretrained model, they need tokenizer config files
             tokenizer = load_tokenizer_from_config(cfg)
             tokenizer.save_pretrained(cfg.model_args.split("=")[1])
-        
+
         # check dtype
         if cfg.precision == "fp32":
             dtype, torch_dtype = "float32", torch.float32
@@ -134,72 +134,72 @@ def evaluate_model(cfg: DictConfig, eval_logger=None, writer=None, step=None):
             dtype, torch_dtype = "bfloat16", torch.bfloat16
         else:
             raise ValueError
-        
+
         if "mor" in cfg and cfg.mor.enable:
             model_cls = MOR_MODEL_CLS[cfg.model_arch]
         elif cfg.recursive.enable or ("kv_sharing" in cfg and cfg.kv_sharing.enable):
             model_cls = RECURSIVE_MODEL_CLS[cfg.model_arch]
         else:
             model_cls = MODEL_CLS[cfg.model_arch]
-            
+
         attn_implementation = cfg.get("attn_implementation", "flash_attention_2")
         print("Loading model from pretrained weights...")
         print(f"Loading model with {attn_implementation}...")
-                
+
         if cfg.relaxation.enable:
             # assert os.path.exists(os.path.join(cfg.model_args.split("=")[1], "adapter_config.json"))
             if cfg.relaxation.method in ["lora", "dora", "recursion_encoding"]:
                 model = model_cls.from_pretrained(
                     cfg.model_args.split("=")[1],
-                    attn_implementation=attn_implementation, 
+                    attn_implementation=attn_implementation,
                     torch_dtype=torch_dtype,
                 )
-                
+
                 if cfg.relaxation.method == "recursion_encoding":
                     from model.relaxation.util import relax_weight_sharing
                     model = relax_weight_sharing(cfg, model)
-                
+
                 try:
                     state_dict = torch.load(os.path.join(cfg.model_args.split("=")[1], "pytorch_model.bin"))
                 except FileNotFoundError:
                     from safetensors.torch import load_file
                     state_dict = load_file(os.path.join(cfg.model_args.split("=")[1], "model.safetensors"))
-                    
+
                 model.load_state_dict(state_dict)
-                
+
             elif cfg.relaxation.method == "adaption_prompt":
                 model = model_cls.from_pretrained(
                     OmegaConf.load(train_cfg_path).model_name_or_path,
                     attn_implementation=attn_implementation,
                     torch_dtype=torch_dtype,
                 )
-                
+
                 from model.sharing_strategy import SHARING_STRATEGY
                 model, _ = SHARING_STRATEGY[cfg.model_arch](cfg, model)
-                
+
                 from model.relaxation.util import relax_weight_sharing
                 model = relax_weight_sharing(cfg, model)
-                
+
                 state_dict = torch.load(os.path.join(cfg.model_args.split("=")[1], "pytorch_model.bin"))
                 if cfg.relaxation.method == "adaption_prompt":
                     model.get_base_model().load_state_dict(state_dict)
-                    
+
                     adapter_state_dict = torch.load(os.path.join(cfg.model_args.split("=")[1], "adapter_model.bin"))
-                    
+
                     if "prompt_embeddings" in adapter_state_dict:
                         adapter_state_dict["prompt_encoder.default.embedding.weight"] = adapter_state_dict["prompt_embeddings"]
                         del adapter_state_dict["prompt_embeddings"]
-                        
+
                     model.load_state_dict(adapter_state_dict, strict=False)
-            
+
         else:
             if "mor" in cfg and cfg.mor.get("enable"):
                 config = AutoConfig.from_pretrained(
                         OmegaConf.load(train_cfg_path).model_name_or_path,
-                        attn_implementation=attn_implementation, 
+                        attn_implementation=attn_implementation,
                         torch_dtype=torch_dtype,
                     )
-                                
+
                 if cfg.get("model_config") is not None:
                     print("Using custom config for vanilla model...")
                     for k, v in cfg.model_config.items():
@@ -209,28 +209,28 @@ def evaluate_model(cfg: DictConfig, eval_logger=None, writer=None, step=None):
                         setattr(config, k, v)
                 model =  model_cls._from_config(
                     config, attn_implementation=attn_implementation, torch_dtype=torch_dtype,)
-                        
+
                 if cfg.mor.type == "expert":
                     model.transform_layer_to_mor_expert(cfg)
                 elif cfg.mor.type == "token":
                     model.transform_layer_to_mor_token(cfg)
-                
+
                 state_dict = torch.load(os.path.join(cfg.model_args.split("=")[1], "pytorch_model.bin"))
                 model.load_state_dict(state_dict)
-                
-            else:                       
+
+            else:
                 model = model_cls.from_pretrained(
                     cfg.model_args.split("=")[1],
-                    attn_implementation=attn_implementation, 
+                    attn_implementation=attn_implementation,
                     torch_dtype=torch_dtype,
                 )
-        
+
         if "kv_sharing" in cfg and cfg.kv_sharing.get("enable"):
             model.set_kv_sharing_config(cfg)
-                
+
         accelerator = Accelerator()
         model = accelerator.prepare(model)
-        
+
         model = get_model(cfg.model)(
             pretrained=model,
             tokenizer=tokenizer,
@@ -240,10 +240,10 @@ def evaluate_model(cfg: DictConfig, eval_logger=None, writer=None, step=None):
             add_bos_token=cfg.add_bos_token,
             batch_size=cfg.batch_size,
         )
-            
+
     else:
         raise ValueError(f"Model {cfg.model} not supported")
-            
+
     # update the evaluation tracker args with the output path and the HF token
     if cfg.output_path:
         cfg.hf_hub_log_args += f",output_path={cfg.output_path}"
@@ -312,8 +312,8 @@ def evaluate_model(cfg: DictConfig, eval_logger=None, writer=None, step=None):
                 )
                 raise ValueError(
                     f"Tasks not found: {missing}. Try `lm-eval --tasks {{list_groups,list_subtasks,list_tags,list}}` to list out all available names for task groupings; only (sub)tasks; tags; or all of the above, or pass '--verbosity DEBUG' to troubleshoot task registration issues."
-                )   
-                     
+                )
+
     # Respect user's value passed in via CLI, otherwise default to True and add to comma-separated model args
     if cfg.trust_remote_code:
         eval_logger.info(
@@ -361,7 +361,7 @@ def evaluate_model(cfg: DictConfig, eval_logger=None, writer=None, step=None):
         fewshot_random_seed=cfg.seed[3],
         **request_caching_args,
     )
-    
+
     if results is not None:
         if cfg.log_samples:
             samples = results.pop("samples")
@@ -396,17 +396,17 @@ def evaluate_model(cfg: DictConfig, eval_logger=None, writer=None, step=None):
         print(make_table(results))
         if "groups" in results:
             print(make_table(results, "groups"))
-            
+
         if not cfg.get("eval_multiple_checkpoints", False):
             # json file
             save_path = os.path.join(SAVE_DIR, "eval_fewshot", cfg.name, "results_last_ckpt.json")
             with open(save_path, "w") as f:
                 results["model_source"] = cfg.model
                 json.dump(results, f, indent=4, default=convert_to_serializable)
-                
+
             if cfg.get("wandb"):
                 init_wandb(cfg)
-            
+
                 api = wandb.Api()
                 run = api.run(f"{cfg.wandb_entity}/{cfg.wandb_project}/{cfg.wandb_run_id}")
                 history = run.history(keys=["_step"], pandas=False)
@@ -414,7 +414,7 @@ def evaluate_model(cfg: DictConfig, eval_logger=None, writer=None, step=None):
                     last_step = history[-1]["_step"]
                 else:
                     last_step = 0
-                                    
+
                 wandb_log = defaultdict(float)
                 for task_name, metrics in results["results"].items():
                     for metric_name, value in metrics.items():
@@ -422,7 +422,7 @@ def evaluate_model(cfg: DictConfig, eval_logger=None, writer=None, step=None):
                             key = f"eval_fewshot/{task_name}_{metric_name.replace('.', '_')}_last_ckpt"
                             wandb_log[key] = value
                             wandb.define_metric(key, step_metric="eval_fewshot/step")
-                            
+
                 wandb_log["eval_fewshot/step"] = last_step
                 wandb.log(wandb_log)
                 wandb.finish()
@@ -431,23 +431,23 @@ def evaluate_model(cfg: DictConfig, eval_logger=None, writer=None, step=None):
 
 def evaluate_multiple_checkpoints(cfg: DictConfig, eval_logger=None, writer=None):
     ckpt_fpath = cfg.model_args.split("=")[1]
-    
+
     OmegaConf.set_struct(cfg, True)
     with open_dict(cfg):
         ckpt_dirs = glob.glob(os.path.join(ckpt_fpath, "checkpoint-*"))
         ckpt_dirs.sort(key=lambda x: int(x.split("-")[-1]))
-        
-        results = defaultdict(dict)        
+
+        results = defaultdict(dict)
         if len(ckpt_dirs) != 0:
             print("Evaluating all checkpoints")
             print("=" * 80)
             for ckpt_dir in ckpt_dirs:
                 cfg.model_args = f"pretrained={ckpt_dir}"
-                
+
                 step = int(ckpt_dir.split("-")[-1])
                 _results = evaluate_model(cfg, eval_logger, step=step)
                 results[step] = _results
-                
+
     if len(ckpt_dirs) != 0:
         # json file
         save_path = os.path.join(SAVE_DIR, "eval_fewshot", cfg.name, "results_multiple_ckpt.json")
@@ -459,23 +459,23 @@ def evaluate_multiple_checkpoints(cfg: DictConfig, eval_logger=None, writer=None
 
         if cfg.get("wandb"):
             init_wandb(cfg)
-            
+
             api = wandb.Api()
             run = api.run(f"{cfg.wandb_entity}/{cfg.wandb_project}/{cfg.wandb_run_id}")
             history = run.history(keys=["_step"], pandas=False)
-            
+
             total_steps = len(history)
             ratio = sorted(results.keys())[-1] / sorted(results.keys())[0]
-                
+
             for idx, (step, _results) in enumerate(results.items()):
                 wandb_log = defaultdict(float)
                 for task_name, metrics in _results["results"].items():
                     for metric_name, value in metrics.items():
                         if "std" not in metric_name:
                             key = f"eval_fewshot/{task_name}_{metric_name.replace('.', '_')}_multiple_ckpt"
-                            wandb_log[key] = value                                
+                            wandb_log[key] = value
                             wandb.define_metric(key, step_metric="eval_fewshot/step")
-                            
+
                 wandb_log["eval_fewshot/step"] = int(total_steps / ratio * (idx + 1)) - 1
                 wandb.log(wandb_log)
     return len(ckpt_dirs) != 0

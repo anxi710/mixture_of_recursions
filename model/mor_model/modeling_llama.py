@@ -272,6 +272,11 @@ class MoRLlamaModel(LlamaModel):
                             balancing_ratio = layer_outputs.balancing_ratio
                         if layer_outputs.router_z_loss is not None:
                             router_z_loss = layer_outputs.router_z_loss
+                    elif decoder_layer.mor_type == "prototype":
+                        lpr_losses = layer_outputs[3]
+                        
+                        balancing_loss += lpr_losses["loss_kl"] + lpr_losses["loss_align"]
+                        router_z_loss += lpr_losses["loss_div"]
                 else:
                     layer_outputs = decoder_layer(
                         hidden_states,
@@ -343,9 +348,14 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
             base_depth = num_hidden_layers // num_recursion
             self.model.layers = nn.ModuleList(
                 [
-                    MoRLlamaDecoderLayer(self.config, nn.ModuleList([self.model.layers[layer_idx + recur_idx * base_depth] for layer_idx in range(base_depth)]), 
-                                         cfg, capacity[recur_idx], cap_warmup_step,) 
-                    for recur_idx in range(num_recursion)
+                    MoRLlamaDecoderLayer(
+                        self.config,
+                        nn.ModuleList([self.model.layers[layer_idx + recur_idx * base_depth] for layer_idx in range(base_depth)]),
+                        cfg,
+                        capacity[recur_idx],
+                        cap_warmup_step,
+                        recur_idx=recur_idx
+                    ) for recur_idx in range(num_recursion)
                 ]
             )
         elif sharing == "middle_cycle":
@@ -353,9 +363,14 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
             self.model.layers = nn.ModuleList(
                 [self.model.layers[0]] + \
                 [
-                    MoRLlamaDecoderLayer(self.config, nn.ModuleList([self.model.layers[1 + layer_idx + recur_idx * base_depth] for layer_idx in range(base_depth)]), 
-                                         cfg, capacity[recur_idx], cap_warmup_step,)
-                    for recur_idx in range(num_recursion)
+                    MoRLlamaDecoderLayer(
+                        self.config,
+                        nn.ModuleList([self.model.layers[1 + layer_idx + recur_idx * base_depth] for layer_idx in range(base_depth)]), 
+                        cfg,
+                        capacity[recur_idx],
+                        cap_warmup_step,
+                        recur_idx=recur_idx
+                    ) for recur_idx in range(num_recursion)
                 ]
                 + [self.model.layers[-1]]
             )
@@ -369,7 +384,7 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
             bal_warmup_step = cfg.mor.token.bal_warmup_step * cfg.gradient_accumulation_steps
         
         sharing = cfg.recursive.sharing
-        num_recursion = cfg.recursive.num_recursion        
+        num_recursion = cfg.recursive.num_recursion
         num_hidden_layers = len(self.model.layers)
         
         # Cycle sharing is for early-exiting mechanism
@@ -393,6 +408,66 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
                 ),] + \
                 [self.model.layers[-1]]
             )
+
+    def transform_layer_to_mor_prototype(self, cfg):
+        """
+        将模型的中间层转换为统一的、基于原型的MoR解码层。
+        此版本经过修正，可正确处理KV Cache。
+        """
+        from prototype_mor_llama import PrototypeMoRLlamaDecoderLayer
+        # 从expert_choice_router导入其特制的Attention层，这是与Cache对象交互的关键
+        from model.mor_model.expert_choice_router import MoRLlamaAttention
+        import copy
+
+        sharing = cfg.recursive.sharing
+        num_recursion = cfg.recursive.num_recursion
+        num_hidden_layers = len(self.model.layers)
+
+        if sharing != "middle_cycle":
+            raise NotImplementedError("Prototype-MoR 目前仅支持 'middle_cycle' 共享策略。")
+        if num_hidden_layers < 3:
+            raise ValueError("'middle_cycle' 共享策略要求模型至少有3个层。")
+
+        first_layer = self.model.layers[0]
+        last_layer = self.model.layers[-1]
+        
+        base_depth = (num_hidden_layers - 2) // num_recursion
+        if (num_hidden_layers - 2) % num_recursion != 0:
+            print(f"警告: 中间层数量 ({num_hidden_layers - 2}) 不能被递归次数 ({num_recursion}) 整除。")
+
+        # 1. 定义将被重复使用的原始共享块
+        original_shared_block = [self.model.layers[i] for i in range(1, 1 + base_depth)]
+
+        # 2. 为每个递归深度创建独立的共享块副本
+        all_shared_blocks = nn.ModuleList()
+        for depth_idx in range(num_recursion):
+            current_depth_block = nn.ModuleList()
+            for i in range(base_depth):
+                layer_copy = copy.deepcopy(original_shared_block[i])
+
+                effective_layer_idx = 1 + (depth_idx * base_depth) + i
+                
+                layer_copy.self_attn = MoRLlamaAttention(self.config, layer_idx=effective_layer_idx)
+                
+                current_depth_block.append(layer_copy)
+            
+            all_shared_blocks.append(current_depth_block)
+
+        prototype_decoder_layer = PrototypeMoRLlamaDecoderLayer(
+            self.config,
+            all_shared_blocks,
+            num_recursion,
+            cfg
+        )
+        
+        prototype_decoder_layer.mor = True
+        prototype_decoder_layer.mor_type = "prototype"
+        
+        self.model.layers = nn.ModuleList([
+            first_layer,
+            prototype_decoder_layer,
+            last_layer
+        ])
     
     def set_kv_sharing_config(self, cfg):
         if cfg.kv_sharing.sharing in ["cycle", "sequence"]:

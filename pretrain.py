@@ -1,4 +1,4 @@
-import os 
+import os
 os.environ["HYDRA_FULL_ERROR"] = "1"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 from paths import SAVE_DIR, PROJECT_ROOT, HF_CACHE_DIR; os.environ["HF_HOME"] = HF_CACHE_DIR
@@ -9,33 +9,35 @@ from pathlib import Path
 import random
 import hydra
 import torch
-import torch.nn as nn 
+import torch.nn as nn
 import torch.distributed as dist
-from omegaconf import DictConfig, OmegaConf 
+from omegaconf import DictConfig, OmegaConf
 from copy import deepcopy
 from transformers import TrainingArguments, Trainer
 from accelerate import Accelerator
 
-from lm_dataset.load_dataset import LM_DATASETS, load_dataset_from_config 
+from lm_dataset.load_dataset import LM_DATASETS, load_dataset_from_config
 from model.util import load_model_from_config
 from model.sharing_strategy import SHARING_STRATEGY
 from model.relaxation.util import relax_weight_sharing
 from util.config import preprocess_config
-from util.tokenizer import load_tokenizer_from_config 
+from util.tokenizer import load_tokenizer_from_config
 from util.trainer_pt import MoRTrainer
 from util.callback import FixedStoppingCallback, EvalCallback, PeftSaveCallback, DatasetSaveCallback, ScalingLawsSaveCallback
 from util.misc import print_trainable_parameters, get_latest_checkpoint_path, print_rank_zero, get_launcher_type; print_rank_zero()
+
+import requests
 
 
 @hydra.main(config_path="conf/pretrain", config_name="yymmdd_pretrain")
 def main(cfg: DictConfig):
     cfg = preprocess_config(cfg)
-    
+
     if cfg.wandb and cfg.get("wandb_run_id") is None:
         characters = string.ascii_letters + string.digits
         wandb_run_id = "".join(random.choices(characters, k=8))
         raise KeyError(f"wandb_run_id is not set. Please set wandb_run_id as {wandb_run_id} in the config file and run again.")
-                
+
     # wandb settings
     if cfg.get("wandb"):
         os.environ["WANDB_ENTITY"] = cfg.wandb_entity # name your W&B team
@@ -51,9 +53,9 @@ def main(cfg: DictConfig):
             os.environ["WANDB_DIR"] = PROJECT_ROOT
         os.environ["WANDB_SAVE_CODE"] = "false"
         os.environ["WANDB LOG MODEL"] = "false"
-    
+
     launcher_type = get_launcher_type()
-    
+
     print ("Loading tokenizers...")
     tokenizer = load_tokenizer_from_config(cfg)
 
@@ -67,39 +69,41 @@ def main(cfg: DictConfig):
 
     print ("Loading models...")
     model = load_model_from_config(cfg)
-    
-    if cfg.recursive.get("enable"):        
+
+    if cfg.recursive.get("enable"):
         # KV cache sharing strategy
         model, lora_init_dict = SHARING_STRATEGY[cfg.model](cfg, model)
-    
+
     if "kv_sharing" in cfg and cfg.kv_sharing.get("enable"):
         model.set_kv_sharing_config(cfg)
-        
+
     if cfg.get("relaxation") and cfg.relaxation.get("enable"):
         model = relax_weight_sharing(cfg, model, lora_init_dict=lora_init_dict)
-        
+
         if cfg.resume_from_checkpoint:
             if cfg.relaxation.get("enable"):
-                latest_checkpoint = get_latest_checkpoint_path(cfg, resume_step=cfg.resume_step if ("resume_step" in cfg and cfg.resume_step is not None) else None)                
+                latest_checkpoint = get_latest_checkpoint_path(cfg, resume_step=cfg.resume_step if ("resume_step" in cfg and cfg.resume_step is not None) else None)
                 state_dict = torch.load(os.path.join(str(latest_checkpoint), "pytorch_model.bin"))
                 model.get_base_model().load_state_dict(state_dict)
-                
-    if "mor" in cfg and cfg.mor.get("enable"):            
+
+    if "mor" in cfg and cfg.mor.get("enable"):
         if cfg.mor.type == "expert":
             model.transform_layer_to_mor_expert(cfg)
         elif cfg.mor.type == "token":
             model.transform_layer_to_mor_token(cfg)
+        elif cfg.mor.type == "prototype":
+            model.transform_layer_to_mor_prototype(cfg)
         else:
             raise ValueError(f"Unknown MoR type {cfg.mor.type}.")
-        
+
     print_trainable_parameters(model)
-        
+
     report_to = []
     if cfg.wandb:
         report_to.append("wandb")
     if cfg.tensorboard:
         report_to.append("tensorboard")
-    
+
     train_args = TrainingArguments(
         lr_scheduler_type=cfg.get("lr_scheduler_type", "cosine_with_min_lr"),
         lr_scheduler_kwargs=dict(cfg.get("lr_scheduler_kwargs", {"min_lr_rate": 0.1,})),
@@ -128,7 +132,7 @@ def main(cfg: DictConfig):
         deepspeed=cfg.deepspeed if launcher_type == "deepspeed" else None,
         log_on_each_node=False,
     )
-    
+
     callbacks = []
     fixed_save_steps = cfg.fixed_save_steps if ("fixed_save_steps" in cfg and cfg.fixed_save_steps) else None
     if cfg.stop_steps is not None:
@@ -141,12 +145,12 @@ def main(cfg: DictConfig):
         callbacks.append(DatasetSaveCallback(cfg.save_steps, fixed_save_steps=fixed_save_steps))
     if fixed_save_steps is not None:
         callbacks.append(ScalingLawsSaveCallback(fixed_save_steps,))
-        
+
     if "mor" in cfg and cfg.mor.get("enable"):
         trainer = MoRTrainer(model=model, args=train_args, train_dataset=train_dataset, callbacks=callbacks, cfg=cfg,)
     else:
         trainer = Trainer(model=model, args=train_args, train_dataset=train_dataset, callbacks=callbacks,)
-    
+
     train_result = trainer.train(
         resume_from_checkpoint=cfg.resume_from_checkpoint
     )
@@ -155,10 +159,22 @@ def main(cfg: DictConfig):
     trainer.save_metrics("pretrain", metrics)
     trainer.save_state()
     trainer.save_model()
-    
+
     if cfg.relaxation.get("enable"):
         trainer.model.base_model.model.save_pretrained(train_args.output_dir, safe_serialization=False)
-    
-    
+
+
 if __name__ == "__main__":
+    log_dir = "/root/mixture_of_recursions/logs"
+    os.makedirs(log_dir, exist_ok=True)   # 目录不存在就创建
+
     main()
+
+    headers = {"Authorization": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjc1MTUyMSwidXVpZCI6IjAyN2NmZWMxYmNjN2M2Y2EiLCJpc19hZG1pbiI6ZmFsc2UsImJhY2tzdGFnZV9yb2xlIjoiIiwiaXNfc3VwZXJfYWRtaW4iOmZhbHNlLCJzdWJfbmFtZSI6IiIsInRlbmFudCI6ImF1dG9kbCIsInVwayI6IiJ9.Pg3Mqz8-PmfQNYlwzj_vFZPQiriprVs9Cm_DVfdXSzdrA2w7S8ZGG1pPR3D0XHbIgPm0otGX93-VQx6veZWfqQ"}
+    resp = requests.post("https://www.autodl.com/api/v1/wechat/message/send",
+                         json={
+                             "title": "MoR 训练",
+                             "name": "训练报告",
+                             "content": "finish~"
+                         }, headers = headers)
+    print(resp.content.decode())

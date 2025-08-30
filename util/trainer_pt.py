@@ -907,6 +907,8 @@ class MoRTrainer(Trainer):
                 total_loss = loss + coeff * balancing_loss
             elif self.cfg.mor.token.balancing == "loss_free":
                 total_loss = loss
+        elif self.cfg.mor.type == "prototype":
+            total_loss = loss + balancing_loss
         else:
             raise ValueError(f"Invalid MOR type: {self.cfg.mor.type}")
             
@@ -977,6 +979,11 @@ class MoRTrainer(Trainer):
                     sampling_loss = sampling_loss / self.args.gradient_accumulation_steps
     
                 self.accelerator.backward(sampling_loss, **kwargs)
+                
+        for layer in model.model.layers:
+            if hasattr(layer, "mor_type") and layer.mor_type == "prototype":
+                if hasattr(layer, "update_expert_keys"):
+                    layer.update_expert_keys()
             
         if self.cfg.mor.type == "expert":
             self.update_metric(sampling_loss, key="sam_tr_loss")

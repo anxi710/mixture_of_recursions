@@ -2,14 +2,15 @@ import os
 
 from transformers import AutoTokenizer
 
-if "wandb_mode" not in os.environ:
-    local_files_only = True
-else:
-    local_files_only = os.environ["WANDB_MODE"] == "offline"
-
 TOKENIZERS = {
-    "smollm": AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM-135M", local_files_only=local_files_only),
-    "smollm2": AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M", local_files_only=local_files_only),
+    "smollm": AutoTokenizer.from_pretrained(
+        "/root/mixture_of_recursions/hf_models/SmolLM-135M",
+        local_files_only=True
+    ),
+    "smollm2": AutoTokenizer.from_pretrained(
+        "/root/mixture_of_recursions/hf_models/SmolLM2-135M",
+        local_files_only=True
+    ),
 }
 
 
