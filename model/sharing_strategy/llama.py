@@ -19,7 +19,7 @@ def average_initialize(cfg, model):
     sharing_strategy = cfg.recursive.sharing
     init_strategy = cfg.recursive.initialization
     torch_dtype = get_torch_dtype(cfg)
-    
+
     if cfg.recursive.num_recursion == 1:
         base_depth = cfg.recursive.base_depth
         num_recursion = model.config.num_hidden_layers // base_depth
@@ -29,11 +29,11 @@ def average_initialize(cfg, model):
             base_depth = int(model.config.num_hidden_layers // num_recursion)
         elif sharing_strategy in ["middle_cycle", "middle_sequence"]:
             base_depth = int((model.config.num_hidden_layers - 2) // num_recursion)
-    
+
     new_state_dict = {}
     cur_state_dict = model.state_dict()
     lora_init_dict = {}
-    
+
     if sharing_strategy in ["middle_cycle", "middle_sequence"]:
         # First and last layer initialization
         for idx in [0, model.config.num_hidden_layers - 1]:
@@ -41,19 +41,19 @@ def average_initialize(cfg, model):
             keys = ["q_proj", "k_proj", "v_proj", "o_proj"]
             for key in keys:
                 new_state_dict[f"model.layers.{idx}.self_attn.{key}.weight"] = deepcopy(cur_state_dict[f"model.layers.{idx}.self_attn.{key}.weight"])
-        
-            # Fully Connected 
+
+            # Fully Connected
             keys = ["gate_proj", "up_proj", "down_proj"]
             for key in keys:
                 new_state_dict[f"model.layers.{idx}.mlp.{key}.weight"] = deepcopy(cur_state_dict[f"model.layers.{idx}.mlp.{key}.weight"])
-            
+
             # Layer Normalization
             keys = ["input_layernorm", "post_attention_layernorm"]
             for key in keys:
                 new_state_dict[f"model.layers.{idx}.{key}.weight"] = deepcopy(cur_state_dict[f"model.layers.{idx}.{key}.weight"])
 
-    for i in range(base_depth):  
-        # Source and target indices          
+    for i in range(base_depth):
+        # Source and target indices
         if sharing_strategy == "cycle":
             src_idxs = tar_idxs = [i + rec * base_depth for rec in range(num_recursion)]
         elif sharing_strategy == "sequence":
@@ -69,10 +69,10 @@ def average_initialize(cfg, model):
         keys = ["q_proj", "k_proj", "v_proj", "o_proj"]
         for key in keys:
             src_weight = sum([deepcopy(cur_state_dict[f"model.layers.{idx}.self_attn.{key}.weight"]) for idx in src_idxs]) / num_recursion
-            
+
             for tar_idx in tar_idxs:
                 new_state_dict[f"model.layers.{tar_idx}.self_attn.{key}.weight"] = src_weight
-                
+
                 lora_init_dict[f"{tar_idx}_{key}"] = cur_state_dict[f"model.layers.{tar_idx}.self_attn.{key}.weight"] - src_weight
                 lora_init_dict[f"{tar_idx}_{key}"] = torch.as_tensor(lora_init_dict[f"{tar_idx}_{key}"], dtype=torch_dtype)
 
@@ -80,10 +80,10 @@ def average_initialize(cfg, model):
         keys = ["gate_proj", "up_proj", "down_proj"]
         for key in keys:
             src_weight = sum([deepcopy(cur_state_dict[f"model.layers.{idx}.mlp.{key}.weight"]) for idx in src_idxs]) / num_recursion
-            
+
             for tar_idx in tar_idxs:
                 new_state_dict[f"model.layers.{tar_idx}.mlp.{key}.weight"] = src_weight
-                
+
                 lora_init_dict[f"{tar_idx}_{key}"] = cur_state_dict[f"model.layers.{tar_idx}.mlp.{key}.weight"] - src_weight
                 lora_init_dict[f"{tar_idx}_{key}"] = torch.as_tensor(lora_init_dict[f"{tar_idx}_{key}"], dtype=torch_dtype)
 
@@ -111,7 +111,7 @@ def selection_initialize(cfg, model):
     sharing_strategy = cfg.recursive.sharing
     init_strategy = cfg.recursive.initialization
     torch_dtype = get_torch_dtype(cfg)
-    
+
     if cfg.recursive.num_recursion == 1:
         base_depth = cfg.recursive.base_depth
         num_recursion = model.config.num_hidden_layers // base_depth
@@ -125,7 +125,7 @@ def selection_initialize(cfg, model):
     new_state_dict = {}
     cur_state_dict = model.state_dict()
     lora_init_dict = {}
-    
+
     if sharing_strategy in ["middle_cycle", "middle_sequence"]:
         # First and last layer initialization
         for idx in [0, model.config.num_hidden_layers - 1]:
@@ -133,12 +133,12 @@ def selection_initialize(cfg, model):
             keys = ["q_proj", "k_proj", "v_proj", "o_proj"]
             for key in keys:
                 new_state_dict[f"model.layers.{idx}.self_attn.{key}.weight"] = deepcopy(cur_state_dict[f"model.layers.{idx}.self_attn.{key}.weight"])
-        
-            # Fully Connected 
+
+            # Fully Connected
             keys = ["gate_proj", "up_proj", "down_proj"]
             for key in keys:
                 new_state_dict[f"model.layers.{idx}.mlp.{key}.weight"] = deepcopy(cur_state_dict[f"model.layers.{idx}.mlp.{key}.weight"])
-            
+
             # Layer Normalization
             keys = ["input_layernorm", "post_attention_layernorm"]
             for key in keys:
@@ -149,31 +149,31 @@ def selection_initialize(cfg, model):
         if sharing_strategy in ["cycle", "sequence"]:
             src_idxs = [round(i) for i in np.linspace(0, model.config.num_hidden_layers - 1, base_depth)]
         elif sharing_strategy in ["middle_cycle", "middle_sequence"]:
-            src_idxs = [round(i) for i in np.linspace(1, model.config.num_hidden_layers - 2, base_depth)]      
-              
+            src_idxs = [round(i) for i in np.linspace(1, model.config.num_hidden_layers - 2, base_depth)]
+
     elif init_strategy == "lower":
         if sharing_strategy in ["cycle", "sequence"]:
             src_idxs = range(base_depth)
         elif sharing_strategy in ["middle_cycle", "middle_sequence"]:
             src_idxs = range(1, base_depth + 1)
-           
+
     elif init_strategy == "upper":
         if sharing_strategy in ["cycle", "sequence"]:
             src_idxs = range(model.config.num_hidden_layers - base_depth, model.config.num_hidden_layers)
         elif sharing_strategy in ["middle_cycle", "middle_sequence"]:
             src_idxs = range(model.config.num_hidden_layers - base_depth - 1, model.config.num_hidden_layers - 1)
-                    
+
     elif init_strategy == "random":
         if sharing_strategy in ["cycle", "sequence"]:
             src_idxs = sorted(np.random.choice(model.config.num_hidden_layers, base_depth, replace=False))
         elif sharing_strategy in ["middle_cycle", "middle_sequence"]:
-            src_idxs = sorted(np.random.choice(range(1, model.config.num_hidden_layers - 1), base_depth, replace=False))   
-                 
+            src_idxs = sorted(np.random.choice(range(1, model.config.num_hidden_layers - 1), base_depth, replace=False))
+
     else:
         raise ValueError(f"Invalid initialization strategy: {init_strategy}")
-    
-    for i, src_idx in enumerate(src_idxs):    
-        # Target indices        
+
+    for i, src_idx in enumerate(src_idxs):
+        # Target indices
         if sharing_strategy == "cycle":
             tar_idxs = [i + rec * base_depth for rec in range(num_recursion)]
         elif sharing_strategy == "sequence":
@@ -189,10 +189,10 @@ def selection_initialize(cfg, model):
         keys = ["q_proj", "k_proj", "v_proj", "o_proj"]
         for key in keys:
             src_weight = deepcopy(cur_state_dict[f"model.layers.{src_idx}.self_attn.{key}.weight"])
-            
+
             for tar_idx in tar_idxs:
                 new_state_dict[f"model.layers.{tar_idx}.self_attn.{key}.weight"] = src_weight
-                
+
                 lora_init_dict[f"{tar_idx}_{key}"] = cur_state_dict[f"model.layers.{tar_idx}.self_attn.{key}.weight"] - src_weight
                 lora_init_dict[f"{tar_idx}_{key}"] = torch.as_tensor(lora_init_dict[f"{tar_idx}_{key}"], dtype=torch_dtype)
 
@@ -203,7 +203,7 @@ def selection_initialize(cfg, model):
 
             for tar_idx in tar_idxs:
                 new_state_dict[f"model.layers.{tar_idx}.mlp.{key}.weight"] = src_weight
-                
+
                 lora_init_dict[f"{tar_idx}_{key}"] = cur_state_dict[f"model.layers.{tar_idx}.mlp.{key}.weight"] - src_weight
                 lora_init_dict[f"{tar_idx}_{key}"] = torch.as_tensor(lora_init_dict[f"{tar_idx}_{key}"], dtype=torch_dtype)
 
@@ -237,7 +237,7 @@ def sharing_strategy(cfg, model):
     """
     sharing_strategy = cfg.recursive.sharing
     init_strategy = cfg.recursive.initialization
-    
+
     if cfg.recursive.num_recursion == 1:
         base_depth = cfg.recursive.base_depth
         num_recursion = model.config.num_hidden_layers // base_depth
@@ -250,7 +250,7 @@ def sharing_strategy(cfg, model):
                 indices = [round(i) for i in np.linspace(0, model.config.num_hidden_layers - 1, base_depth * num_recursion)]
                 model.model.layers = nn.ModuleList([model.model.layers[idx] for idx in indices])
                 model.config.num_hidden_layers = base_depth * num_recursion
-                
+
         elif sharing_strategy in ["middle_cycle", "middle_sequence"]:
             base_depth = int((model.config.num_hidden_layers - 2) // num_recursion)
             if base_depth * num_recursion != model.config.num_hidden_layers - 2:
@@ -258,7 +258,7 @@ def sharing_strategy(cfg, model):
                 indices = [round(i) for i in np.linspace(1, model.config.num_hidden_layers - 2, base_depth * num_recursion)]
                 model.model.layers = nn.ModuleList([model.model.layers[0]] + [model.model.layers[idx] for idx in indices] + [model.model.layers[-1]])
                 model.config.num_hidden_layers = base_depth * num_recursion + 2
-                
+
         else:
             raise ValueError(f"Invalid sharing strategy: {sharing_strategy}")
 
@@ -271,7 +271,7 @@ def sharing_strategy(cfg, model):
             step = model.config.num_hidden_layers // base_depth
             model.model.layers = model.model.layers[::step]
         model.config.num_hidden_layers = base_depth
-    else:    
+    else:
         for layer_idx in range(base_depth):
 
             if sharing_strategy == "cycle":
@@ -309,5 +309,5 @@ def sharing_strategy(cfg, model):
 
                     for idx in idxs[1:]:
                         getattr(model.model.layers[idx], key).weight = ref_weights #[key]
-    
+
     return model, lora_init_dict

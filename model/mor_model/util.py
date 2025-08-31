@@ -14,7 +14,7 @@ class LinearRouter(nn.Module):
         self.config = config
         self.router = nn.Linear(config.hidden_size, out_dim, bias=False)
         self.router.weight.data.normal_(mean=0.0, std=config.initializer_range)
-        
+
     def forward(self, x):
         return self.router(x)
 
@@ -31,7 +31,7 @@ class MLPRouter(nn.Module):
         for layer in self.router:
             if isinstance(layer, nn.Linear):
                 layer.weight.data.normal_(mean=0.0, std=config.initializer_range)
-    
+
     def forward(self, x):
         return self.router(x)
 
@@ -48,7 +48,7 @@ class WideMLPRouter(nn.Module):
         for layer in self.router:
             if isinstance(layer, nn.Linear):
                 layer.weight.data.normal_(mean=0.0, std=config.initializer_range)
-    
+
     def forward(self, x):
         return self.router(x)
 
@@ -127,8 +127,8 @@ class DepthAwareRouter(nn.Module):
 
 
 ROUTER_TYPES = {
-    "linear": LinearRouter, 
-    "mlp": MLPRouter, 
+    "linear": LinearRouter,
+    "mlp": MLPRouter,
     "wide_mlp": WideMLPRouter,
     "depth_aware": DepthAwareRouter,
 }

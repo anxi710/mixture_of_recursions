@@ -27,8 +27,8 @@ from transformers.utils.deprecation import deprecate_kwarg
 
 from model.kv_caches.cache_utils import Cache, StaticCache, DynamicCache, RecursiveDynamicCache
 from model.base_model.modeling_llama import (
-    LlamaModel, 
-    LlamaForCausalLM, 
+    LlamaModel,
+    LlamaForCausalLM,
     KwargsForCausalLM,
     LlamaRMSNorm,
     LLAMA_START_DOCSTRING,
@@ -132,8 +132,8 @@ class MoRCausalLMOutputWithPast(ModelOutput):
     balancing_loss: Optional[torch.FloatTensor] = None
     balancing_ratio: Optional[torch.FloatTensor] = None
     router_z_loss: Optional[torch.FloatTensor] = None
-    
-    
+
+
 @add_start_docstrings(
     "The bare LLaMA Model outputting raw hidden-states without any specific head on top.",
     LLAMA_START_DOCSTRING,
@@ -208,7 +208,7 @@ class MoRLlamaModel(LlamaModel):
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
-        
+
         prev_selected_tokens = None
         sampling_loss = torch.tensor(0.0, device=hidden_states.device)
         sampling_acc_list = []
@@ -218,8 +218,8 @@ class MoRLlamaModel(LlamaModel):
         balancing_loss = torch.tensor(0.0, device=hidden_states.device)
         balancing_ratio = torch.tensor(0.0, device=hidden_states.device)
         router_z_loss = torch.tensor(0.0, device=hidden_states.device)
-        
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:            
+
+        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
@@ -264,7 +264,7 @@ class MoRLlamaModel(LlamaModel):
                         #     dead_token_seq = layer_outputs.dead_token_seq
                         if layer_outputs.router_z_loss is not None:
                             router_z_loss += layer_outputs.router_z_loss
-                            
+
                     elif decoder_layer.mor_type == "token":
                         if layer_outputs.balancing_loss is not None:
                             balancing_loss = layer_outputs.balancing_loss
@@ -274,7 +274,7 @@ class MoRLlamaModel(LlamaModel):
                             router_z_loss = layer_outputs.router_z_loss
                     elif decoder_layer.mor_type == "prototype":
                         lpr_losses = layer_outputs[3]
-                        
+
                         balancing_loss += lpr_losses["loss_kl"] + lpr_losses["loss_align"]
                         router_z_loss += lpr_losses["loss_div"]
                 else:
@@ -319,7 +319,7 @@ class MoRLlamaModel(LlamaModel):
 
 
 class MoRLlamaForCausalLM(LlamaForCausalLM):
-    
+
     def __init__(self, config):
         super().__init__(config)
         self.model = MoRLlamaModel(config)
@@ -328,21 +328,21 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
 
         # Initialize weights and apply final processing
         self.post_init()
-    
+
     def transform_layer_to_mor_expert(self, cfg):
         from model.mor_model.expert_choice_router import MoRLlamaDecoderLayer
-        
+
         capacity = [float(cap) for cap in cfg.mor.capacity.split(',')]
         # warmup_step for capacity_factor
         if "cap_warmup_step" in cfg.mor.expert and cfg.mor.expert.cap_warmup_step is not None:
             cap_warmup_step = cfg.mor.expert.cap_warmup_step
         else:
             cap_warmup_step = cfg.num_warmup_steps * cfg.gradient_accumulation_steps
-        
+
         sharing = cfg.recursive.sharing
-        num_recursion = cfg.recursive.num_recursion        
+        num_recursion = cfg.recursive.num_recursion
         num_hidden_layers = len(self.model.layers)
-        
+
         # Cycle sharing is for early-exiting mechanism
         if sharing == "cycle":
             base_depth = num_hidden_layers // num_recursion
@@ -365,7 +365,7 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
                 [
                     MoRLlamaDecoderLayer(
                         self.config,
-                        nn.ModuleList([self.model.layers[1 + layer_idx + recur_idx * base_depth] for layer_idx in range(base_depth)]), 
+                        nn.ModuleList([self.model.layers[1 + layer_idx + recur_idx * base_depth] for layer_idx in range(base_depth)]),
                         cfg,
                         capacity[recur_idx],
                         cap_warmup_step,
@@ -374,19 +374,19 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
                 ]
                 + [self.model.layers[-1]]
             )
-    
+
     def transform_layer_to_mor_token(self, cfg):
         from model.mor_model.token_choice_router import MoRLlamaDecoderLayer
-                
+
         # warmup_step for balancing
         bal_warmup_step = 0
         if "bal_warmup_step" in cfg.mor.token and cfg.mor.token.bal_warmup_step > 0:
             bal_warmup_step = cfg.mor.token.bal_warmup_step * cfg.gradient_accumulation_steps
-        
+
         sharing = cfg.recursive.sharing
         num_recursion = cfg.recursive.num_recursion
         num_hidden_layers = len(self.model.layers)
-        
+
         # Cycle sharing is for early-exiting mechanism
         if sharing == "cycle":
             base_depth = num_hidden_layers // num_recursion
@@ -411,12 +411,8 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
 
     def transform_layer_to_mor_prototype(self, cfg):
         """
-        将模型的中间层转换为统一的、基于原型的MoR解码层。
-        此版本经过修正，可正确处理KV Cache。
         """
-        from prototype_mor_llama import PrototypeMoRLlamaDecoderLayer
-        # 从expert_choice_router导入其特制的Attention层，这是与Cache对象交互的关键
-        from model.mor_model.expert_choice_router import MoRLlamaAttention
+        from prototype_choice_router import PrototypeMoRLlamaDecoderLayer
         import copy
 
         sharing = cfg.recursive.sharing
@@ -430,10 +426,8 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
 
         first_layer = self.model.layers[0]
         last_layer = self.model.layers[-1]
-        
+
         base_depth = (num_hidden_layers - 2) // num_recursion
-        if (num_hidden_layers - 2) % num_recursion != 0:
-            print(f"警告: 中间层数量 ({num_hidden_layers - 2}) 不能被递归次数 ({num_recursion}) 整除。")
 
         # 1. 定义将被重复使用的原始共享块
         original_shared_block = [self.model.layers[i] for i in range(1, 1 + base_depth)]
@@ -442,15 +436,11 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
         all_shared_blocks = nn.ModuleList()
         for depth_idx in range(num_recursion):
             current_depth_block = nn.ModuleList()
+
             for i in range(base_depth):
                 layer_copy = copy.deepcopy(original_shared_block[i])
-
-                effective_layer_idx = 1 + (depth_idx * base_depth) + i
-                
-                layer_copy.self_attn = MoRLlamaAttention(self.config, layer_idx=effective_layer_idx)
-                
                 current_depth_block.append(layer_copy)
-            
+
             all_shared_blocks.append(current_depth_block)
 
         prototype_decoder_layer = PrototypeMoRLlamaDecoderLayer(
@@ -459,34 +449,34 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
             num_recursion,
             cfg
         )
-        
+
         prototype_decoder_layer.mor = True
         prototype_decoder_layer.mor_type = "prototype"
-        
+
         self.model.layers = nn.ModuleList([
             first_layer,
             prototype_decoder_layer,
             last_layer
         ])
-    
+
     def set_kv_sharing_config(self, cfg):
         if cfg.kv_sharing.sharing in ["cycle", "sequence"]:
             base_depth = self.config.num_hidden_layers // cfg.kv_sharing.num_recursion
         elif cfg.kv_sharing.sharing in ["middle_cycle"]:
             base_depth = (self.config.num_hidden_layers - 2) // cfg.kv_sharing.num_recursion
-        
-        if "kv_sharing" in cfg:                
+
+        if "kv_sharing" in cfg:
             kwargs = {
                 "enable": cfg.kv_sharing.enable,
                 "base_depth": base_depth,
                 "num_recursion": cfg.kv_sharing.num_recursion,
                 "sharing": cfg.kv_sharing.sharing,
                 "update_cache": cfg.kv_sharing.update_cache if "update_cache" in cfg.kv_sharing else False,
-            }        
+            }
             self.model.config.kv_sharing = kwargs
         else:
             self.model.config.kv_sharing = None
-                    
+
     @deprecate_kwarg("num_logits_to_keep", version="4.50", new_name="logits_to_keep")
     @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=MoRCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
@@ -563,7 +553,7 @@ class MoRLlamaForCausalLM(LlamaForCausalLM):
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
-        
+
         loss = None
         if labels is not None:
             loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)

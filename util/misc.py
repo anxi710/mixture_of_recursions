@@ -20,25 +20,25 @@ def _print_rank_zero(*args, **kwargs):
     if os.environ.get("RANK") is not None and int(os.environ.get("RANK")) != 0:
         return
     original_print(*args, **kwargs)
-    
-    
+
+
 def print_rank_zero():
     # overwrite the print function
     builtins.print = _print_rank_zero
-    
-    
+
+
 def convert_to_serializable(obj):
     if isinstance(obj, (datetime.datetime, datetime.date)):
         return obj.isoformat()
     elif isinstance(obj, np.ndarray):
-        return obj.tolist() 
+        return obj.tolist()
     elif isinstance(obj, complex):
-        return [obj.real, obj.imag] 
+        return [obj.real, obj.imag]
     elif isinstance(obj, torch.dtype):
         return str(obj)
     else:
         raise TypeError(f"Type {type(obj)} is not serializable")
-    
+
 
 def check_saved_checkpoint(cfg, SAVE_DIR):
     """
@@ -65,11 +65,11 @@ def get_nb_trainable_parameters(model):
     trainable_params = 0
     all_param = 0
     relaxation_param = 0
-    
+
     is_peft_model = hasattr(model, "peft_config")
-    
+
     for name, param in model.named_parameters():
-        # if 'base_model' in name and 
+        # if 'base_model' in name and
         num_params = param.numel()
         # if using DS Zero 3 and the weights are initialized empty
         if num_params == 0 and hasattr(param, "ds_numel"):
@@ -82,13 +82,13 @@ def get_nb_trainable_parameters(model):
             num_params = num_params * 2
 
         all_param += num_params
-        
+
         if is_peft_model and ('default' in name or 'adaption' in name):
             relaxation_param += num_params
-        
+
         if param.requires_grad:
             trainable_params += num_params
-            
+
     return trainable_params, all_param, relaxation_param
 
 
@@ -112,8 +112,8 @@ def print_trainable_parameters(model):
         f"relaxation params: {relaxation_param:,d} || "
         f"trainable%: {100 * trainable_params / all_param:.4f}"
     )
-    
-    
+
+
 def get_torch_dtype(cfg):
     if cfg.precision == "bf16":
         return torch.bfloat16
@@ -137,10 +137,10 @@ def get_latest_checkpoint_path(cfg, resume_step=None):
     return latest_checkpoint
 
 
-def get_iterator(param_dict): 
+def get_iterator(param_dict):
     for _name, param in param_dict.items():
         yield param
-        
+
 
 def get_launcher_type():
     is_accelerate_launch = any(var.startswith('ACCELERATE_') for var in os.environ)

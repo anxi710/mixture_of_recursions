@@ -63,7 +63,7 @@ class DiversityRegularizer(nn.Module):
         M = matrix.size(0)
         off_diag_sum = matrix.sum() - matrix.diag().sum()
         return off_diag_sum / (M * (M - 1))
-    
+
 def GetSimilarityMetrics(config):
     if config.routing_metrics =="Cosine":
         return CosineSimilarity(config.router_latent_dim)
@@ -91,30 +91,33 @@ def GetDistributionMetrics(config):
         raise NotImplementedError()
 
 class TokenDistributionRouter(nn.Module):
-    def __init__(self, config,layer_id):
+    def __init__(self, config, layer_id):
         super().__init__()
         self.layer_id = layer_id
-        input_dim = config.hidden_size 
+        input_dim = config.hidden_size
+
         try:
-            self.num_experts = config.num_experts 
+            self.num_experts = config.num_experts
         except:
             try:
-                self.num_experts = config.n_routed_experts 
+                self.num_experts = config.n_routed_experts
             except:
-                self.num_experts = config.num_local_experts 
-        self.top_k = config.num_experts_per_tok 
+                self.num_experts = config.num_local_experts
+
+        self.top_k = config.num_experts_per_tok
         latent_dim = config.router_latent_dim
         self.model_type = config.model_type
         # Encode token into latent space
         self.norm = nn.LayerNorm(input_dim) # Encoded latent scale ≈ expert key
         self.encoder = nn.Linear(input_dim, latent_dim*2)  # output mu and logvar
         self.act = nn.SiLU()
-        # Aligner 
+        # Aligner
         self.out_proj = nn.Linear(latent_dim, input_dim)
         # Regulation Setting
         self.diversity_reg = DiversityRegularizer(config.diversity_type,config.diversity_lambda)
         # Similarity Metrics
         self.SimilarityMetrics = config.SimilarityMetrics
+
         if config.SimilarityMetrics =="VectorSimilarity":
             self.similarity_func = GetSimilarityMetrics(config)
             if config.unit_ball:
@@ -131,11 +134,12 @@ class TokenDistributionRouter(nn.Module):
         # other hyper
         self.ema_sums = nn.Parameter(self.expert_keys.data.clone())
         self.ema_counts = nn.Parameter(torch.zeros(self.num_experts))
-        self.ema_decay = config.router_ema_decay 
+        self.ema_decay = config.router_ema_decay
         self._forward_count = 0
         self.kl_weight = config.kl_weight
         self.align_weight = config.align_weight
         self.div_weight = config.div_weight
+
     def encode(self,x):
         x = self.norm(x)
         x = self.act(x)
@@ -148,16 +152,16 @@ class TokenDistributionRouter(nn.Module):
 
     def compute_kl(self,mu,logvar):
         return -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1).mean()
-    
+
     def compute_diversity_loss(self,x):
         """鼓励专家原型多样化"""
         if self.SimilarityMetrics == "VectorSimilarity":
             return self.diversity_reg(x)
         elif self.SimilarityMetrics == "DistributionDistance":
             return self.diversity_reg(x)
-    
+
     def forward(self, x):
-        
+
         z, mu, logvar = self.encode(x)
 
         self._forward_count+=1
@@ -201,7 +205,7 @@ class TokenDistributionRouter(nn.Module):
             z = self._last_z  # [B, D]
             w = self._last_routing  # [B, M]
 
-            # Sum over batch: weighted token latents per expert 
+            # Sum over batch: weighted token latents per expert
             token_sum = torch.matmul(w.T, z)  # [M, D]
             token_count = w.sum(dim=0)  # [M]
 
@@ -223,7 +227,7 @@ class TokenDistributionRouter(nn.Module):
             # EMA update
             self.ema_counts.mul_(self.ema_decay).add_((1 - self.ema_decay) * w.sum(dim=0))     # [M]
             self.ema_mu.mul_(self.ema_decay).add_((1 - self.ema_decay) * weighted_mu)          # [M, D]
-            self.ema_var.mul_(self.ema_decay).add_((1 - self.ema_decay) * weighted_var) 
+            self.ema_var.mul_(self.ema_decay).add_((1 - self.ema_decay) * weighted_var)
             # Avoid divide-by-zero
             counts = self.ema_counts.unsqueeze(1).clamp(min=1e-6)  # [M, 1]
             mu_new = self.ema_mu / counts
